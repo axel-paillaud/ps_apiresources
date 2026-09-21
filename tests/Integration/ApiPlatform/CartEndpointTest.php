@@ -36,6 +36,8 @@ class CartEndpointTest extends ApiTestCase
     private const FIXTURE_SECOND_PRODUCT_ID = 6;
     // Fixture address ID that always exists in the test DB
     private const FIXTURE_ADDRESS_ID = 1;
+    // Second address of the fixture customer
+    private const FIXTURE_SECOND_ADDRESS_ID = 4;
     // Default currency ID (Euro) in the test DB
     private const FIXTURE_CURRENCY_ID = 1;
     // Default language ID in the test DB
@@ -78,6 +80,9 @@ class CartEndpointTest extends ApiTestCase
             'cart_rule_shop',
             'customization',
             'customized_data',
+            // The price endpoint stores a specific price bound to the cart ID, and the restored cart table
+            // hands the same IDs out again
+            'specific_price',
         ]);
     }
 
@@ -164,7 +169,11 @@ class CartEndpointTest extends ApiTestCase
         ];
     }
 
-    public function testCreateCart(): int
+    /**
+     * The tests below are chained: each one receives the cart expected at that point, updates the part its
+     * endpoint modifies and compares it with the whole response, so a side effect on any other field is caught.
+     */
+    public function testCreateCart(): array
     {
         $cart = $this->createItem('/carts', ['customerId' => self::FIXTURE_CUSTOMER_ID], ['cart_write']);
 
@@ -173,216 +182,269 @@ class CartEndpointTest extends ApiTestCase
         $this->assertIsInt($cartId);
         $this->assertGreaterThan(0, $cartId);
 
-        $this->assertEquals([
+        $this->assertCount(2, $cart['addresses']);
+        $expectedCart = [
             'cartId' => $cartId,
             'customerId' => self::FIXTURE_CUSTOMER_ID,
             'currencyId' => self::FIXTURE_CURRENCY_ID,
             'languageId' => self::FIXTURE_LANGUAGE_ID,
             'products' => [],
             'cartRules' => [],
-            'addresses' => $cart['addresses'],
-            'shipping' => $cart['shipping'],
-            'summary' => $cart['summary'],
-        ], $cart);
+            // The alias and the formatted address come from the fixtures, they are read once here and must
+            // then stay identical in every following response
+            'addresses' => [
+                [
+                    'addressId' => self::FIXTURE_ADDRESS_ID,
+                    'alias' => $cart['addresses'][0]['alias'],
+                    'formattedAddress' => $cart['addresses'][0]['formattedAddress'],
+                    'delivery' => true,
+                    'invoice' => true,
+                ],
+                [
+                    'addressId' => self::FIXTURE_SECOND_ADDRESS_ID,
+                    'alias' => $cart['addresses'][1]['alias'],
+                    'formattedAddress' => $cart['addresses'][1]['formattedAddress'],
+                    'delivery' => false,
+                    'invoice' => false,
+                ],
+            ],
+            // The core only fills the shipping block when the cart has a delivery option, which this fixture
+            // cart never gets
+            'shipping' => null,
+            'summary' => [
+                'totalProductsPrice' => '$0.00',
+                'totalDiscount' => '$0.00',
+                'totalShippingPrice' => '$0.00',
+                'totalShippingWithoutTaxes' => '$0.00',
+                'totalTaxes' => '$0.00',
+                'totalPriceWithTaxes' => '$0.00',
+                'totalPriceWithoutTaxes' => '$0.00',
+                // Holds a token generated for the cart
+                'processOrderLink' => $cart['summary']['processOrderLink'],
+                'orderMessage' => '',
+            ],
+        ];
+        $this->assertNotEmpty($expectedCart['summary']['processOrderLink']);
+        $this->assertEquals($expectedCart, $cart);
 
-        return $cartId;
+        return $expectedCart;
     }
 
     /**
      * @depends testCreateCart
      */
-    public function testGetCart(int $cartId): int
+    public function testGetCart(array $expectedCart): array
     {
-        $cart = $this->getItem('/carts/' . $cartId, ['cart_read']);
+        $cart = $this->getItem('/carts/' . $expectedCart['cartId'], ['cart_read']);
 
-        $this->assertEquals([
-            'cartId' => $cartId,
-            'customerId' => self::FIXTURE_CUSTOMER_ID,
-            'currencyId' => self::FIXTURE_CURRENCY_ID,
-            'languageId' => self::FIXTURE_LANGUAGE_ID,
-            'products' => [],
-            'cartRules' => [],
-            'addresses' => $cart['addresses'],
-            'shipping' => $cart['shipping'],
-            'summary' => $cart['summary'],
-        ], $cart);
+        $this->assertEquals($expectedCart, $cart);
 
-        return $cartId;
+        return $expectedCart;
     }
 
     /**
      * @depends testGetCart
      */
-    public function testAddProductToCart(int $cartId): int
+    public function testAddProductToCart(array $expectedCart): array
     {
-        $response = $this->createItem('/carts/' . $cartId . '/products', [
+        $response = $this->createItem('/carts/' . $expectedCart['cartId'] . '/products', [
             'productId' => self::FIXTURE_PRODUCT_ID,
             'quantity' => 2,
         ], ['cart_write'], Response::HTTP_CREATED);
 
+        $this->assertCount(1, $response['products']);
+        $expectedCart['products'] = [
+            [
+                'productId' => self::FIXTURE_PRODUCT_ID,
+                'attributeId' => 0,
+                'name' => 'Hummingbird printed t-shirt',
+                'attribute' => '',
+                'reference' => 'demo_1',
+                'unitPrice' => '19.12',
+                'quantity' => 2,
+                'price' => '38.24',
+                // The image link depends on the shop domain and the stock on the tests that ran before, they
+                // are read once here and must then stay identical in every following response
+                'imageLink' => $response['products'][0]['imageLink'],
+                'customization' => null,
+                'availableStock' => $response['products'][0]['availableStock'],
+                'availableOutOfStock' => false,
+                'gift' => false,
+            ],
+        ];
+
         // The CartProduct resource only returns the updated product list, not the whole cart
-        $this->assertEquals($cartId, $response['cartId']);
-        $this->assertArrayHasKey('products', $response);
-        $this->assertArrayNotHasKey('cartRules', $response);
-        $this->assertArrayNotHasKey('addresses', $response);
-        $this->assertArrayNotHasKey('shipping', $response);
-        $this->assertArrayNotHasKey('summary', $response);
+        $this->assertEquals($this->getExpectedCartProducts($expectedCart), $response);
 
-        $this->assertNotEmpty($response['products']);
-        $product = $response['products'][0];
-
-        $this->assertEquals([
-            'productId' => self::FIXTURE_PRODUCT_ID,
-            'attributeId' => $product['attributeId'],
-            'name' => $product['name'],
-            'attribute' => $product['attribute'],
-            'reference' => $product['reference'],
-            'unitPrice' => $product['unitPrice'],
-            'quantity' => 2,
-            'price' => $product['price'],
-            'imageLink' => $product['imageLink'],
-            'customization' => null,
-            'availableStock' => $product['availableStock'],
-            'availableOutOfStock' => $product['availableOutOfStock'],
-            'gift' => false,
-        ], $product);
-
-        return $cartId;
+        return $expectedCart;
     }
 
     /**
      * @depends testAddProductToCart
      */
-    public function testUpdateProductQuantityInCart(int $cartId): int
+    public function testUpdateProductQuantityInCart(array $expectedCart): array
     {
         $response = $this->updateItem(
-            '/carts/' . $cartId . '/products/' . self::FIXTURE_PRODUCT_ID . '/quantity',
+            '/carts/' . $expectedCart['cartId'] . '/products/' . self::FIXTURE_PRODUCT_ID . '/quantity',
             ['quantity' => 5],
             ['cart_write']
         );
 
-        $this->assertNotEmpty($response['products']);
-        $this->assertEquals(5, $response['products'][0]['quantity']);
+        $expectedCart['products'][0]['quantity'] = 5;
+        $expectedCart['products'][0]['price'] = '95.6';
+        $this->assertEquals($this->getExpectedCartProducts($expectedCart, self::FIXTURE_PRODUCT_ID), $response);
 
-        return $cartId;
+        return $expectedCart;
     }
 
     /**
      * @depends testUpdateProductQuantityInCart
      */
-    public function testUpdateProductPriceInCart(int $cartId): int
+    public function testUpdateProductPriceInCart(array $expectedCart): array
     {
         $response = $this->updateItem(
-            '/carts/' . $cartId . '/products/' . self::FIXTURE_PRODUCT_ID . '/price',
+            '/carts/' . $expectedCart['cartId'] . '/products/' . self::FIXTURE_PRODUCT_ID . '/price',
             // combinationId is required here, 0 stands for a product without combination
             ['combinationId' => 0, 'price' => 12.5],
             ['cart_write']
         );
 
-        $this->assertNotEmpty($response['products']);
-        // Cast: the query result formats the price as a string, with a precision that is not worth pinning down here
-        $this->assertEquals(12.5, (float) $response['products'][0]['unitPrice']);
+        $expectedCart['products'][0]['unitPrice'] = '12.5';
+        $expectedCart['products'][0]['price'] = '62.5';
+        $this->assertEquals($this->getExpectedCartProducts($expectedCart, self::FIXTURE_PRODUCT_ID), $response);
 
-        return $cartId;
+        // The product endpoints do not return the summary, the whole cart is read to check it follows
+        $expectedCart['summary']['totalProductsPrice'] = '$62.50';
+        $expectedCart['summary']['totalPriceWithTaxes'] = '$62.50';
+        $expectedCart['summary']['totalPriceWithoutTaxes'] = '$62.50';
+        $this->assertEquals($expectedCart, $this->getItem('/carts/' . $expectedCart['cartId'], ['cart_read']));
+
+        return $expectedCart;
     }
 
     /**
      * @depends testUpdateProductPriceInCart
      */
-    public function testRemoveProductFromCart(int $cartId): int
+    public function testRemoveProductFromCart(array $expectedCart): array
     {
         // A second product proves the removal only targets the requested one instead of emptying the cart
-        $response = $this->createItem('/carts/' . $cartId . '/products', [
+        $response = $this->createItem('/carts/' . $expectedCart['cartId'] . '/products', [
             'productId' => self::FIXTURE_SECOND_PRODUCT_ID,
             'quantity' => 1,
         ], ['cart_write']);
+
         $this->assertCount(2, $response['products']);
+        $expectedCart['products'][] = [
+            'productId' => self::FIXTURE_SECOND_PRODUCT_ID,
+            'attributeId' => 0,
+            'name' => 'Mug The best is yet to come',
+            'attribute' => '',
+            'reference' => 'demo_11',
+            'unitPrice' => '11.9',
+            'quantity' => 1,
+            'price' => '11.9',
+            'imageLink' => $response['products'][1]['imageLink'],
+            'customization' => null,
+            'availableStock' => $response['products'][1]['availableStock'],
+            'availableOutOfStock' => false,
+            'gift' => false,
+        ];
+        $this->assertEquals($this->getExpectedCartProducts($expectedCart), $response);
 
         $response = $this->deleteItem(
-            '/carts/' . $cartId . '/products/' . self::FIXTURE_PRODUCT_ID,
+            '/carts/' . $expectedCart['cartId'] . '/products/' . self::FIXTURE_PRODUCT_ID,
             ['cart_write'],
             Response::HTTP_OK
         );
 
-        $this->assertCount(1, $response['products']);
-        $this->assertEquals(self::FIXTURE_SECOND_PRODUCT_ID, $response['products'][0]['productId']);
+        array_shift($expectedCart['products']);
+        $this->assertEquals($this->getExpectedCartProducts($expectedCart, self::FIXTURE_PRODUCT_ID), $response);
 
         $response = $this->deleteItem(
-            '/carts/' . $cartId . '/products/' . self::FIXTURE_SECOND_PRODUCT_ID,
+            '/carts/' . $expectedCart['cartId'] . '/products/' . self::FIXTURE_SECOND_PRODUCT_ID,
             ['cart_write'],
             Response::HTTP_OK
         );
 
-        $this->assertEmpty($response['products']);
+        $expectedCart['products'] = [];
+        $this->assertEquals($this->getExpectedCartProducts($expectedCart, self::FIXTURE_SECOND_PRODUCT_ID), $response);
 
-        return $cartId;
+        $expectedCart['summary']['totalProductsPrice'] = '$0.00';
+        $expectedCart['summary']['totalPriceWithTaxes'] = '$0.00';
+        $expectedCart['summary']['totalPriceWithoutTaxes'] = '$0.00';
+
+        return $expectedCart;
     }
 
     /**
      * @depends testRemoveProductFromCart
      */
-    public function testUpdateCartAddresses(int $cartId): int
+    public function testUpdateCartAddresses(array $expectedCart): array
     {
-        $cart = $this->updateItem('/carts/' . $cartId . '/addresses', [
-            'deliveryAddressId' => self::FIXTURE_ADDRESS_ID,
+        // The cart is created on the first address of the customer for both roles: only the delivery one is
+        // moved, so the test fails if the command does nothing or mixes the two addresses up
+        $cart = $this->updateItem('/carts/' . $expectedCart['cartId'] . '/addresses', [
+            'deliveryAddressId' => self::FIXTURE_SECOND_ADDRESS_ID,
             'invoiceAddressId' => self::FIXTURE_ADDRESS_ID,
         ], ['cart_write']);
 
-        $this->assertEquals($cartId, $cart['cartId']);
-        $selectedAddress = array_filter($cart['addresses'], fn ($a) => $a['addressId'] === self::FIXTURE_ADDRESS_ID);
-        $this->assertNotEmpty($selectedAddress);
+        $expectedCart['addresses'][0]['delivery'] = false;
+        $expectedCart['addresses'][1]['delivery'] = true;
+        $this->assertEquals($expectedCart, $cart);
 
-        return $cartId;
+        return $expectedCart;
     }
 
     /**
      * @depends testUpdateCartAddresses
      */
-    public function testUpdateCartCurrency(int $cartId): int
+    public function testUpdateCartCurrency(array $expectedCart): array
     {
         // The fixture shop only installs one currency, so this can only assert the endpoint accepts the
         // cart current one. See testUpdateCartLanguage for a real change of value.
-        $cart = $this->updateItem('/carts/' . $cartId . '/currency', [
+        $cart = $this->updateItem('/carts/' . $expectedCart['cartId'] . '/currency', [
             'currencyId' => self::FIXTURE_CURRENCY_ID,
         ], ['cart_write']);
 
-        $this->assertEquals($cartId, $cart['cartId']);
-        $this->assertEquals(self::FIXTURE_CURRENCY_ID, $cart['currencyId']);
+        $this->assertEquals($expectedCart, $cart);
 
-        return $cartId;
+        return $expectedCart;
     }
 
     /**
      * @depends testUpdateCartCurrency
      */
-    public function testUpdateCartLanguage(int $cartId): int
+    public function testUpdateCartLanguage(array $expectedCart): array
     {
         // Switching to the second language installed by ApiTestCase rather than to the one the cart already
         // has, otherwise the assertion would pass even if the command did nothing
         $secondLanguageId = (int) \Language::getIdByIso('fr');
         $this->assertNotSame(self::FIXTURE_LANGUAGE_ID, $secondLanguageId);
 
-        $cart = $this->updateItem('/carts/' . $cartId . '/language', [
+        $cart = $this->updateItem('/carts/' . $expectedCart['cartId'] . '/language', [
             'languageId' => $secondLanguageId,
         ], ['cart_write']);
 
-        $this->assertEquals($cartId, $cart['cartId']);
-        $this->assertEquals($secondLanguageId, $cart['languageId']);
+        $expectedCart['languageId'] = $secondLanguageId;
+        $this->assertEquals($expectedCart, $cart);
 
-        $cart = $this->updateItem('/carts/' . $cartId . '/language', [
+        $cart = $this->updateItem('/carts/' . $expectedCart['cartId'] . '/language', [
             'languageId' => self::FIXTURE_LANGUAGE_ID,
         ], ['cart_write']);
 
-        $this->assertEquals(self::FIXTURE_LANGUAGE_ID, $cart['languageId']);
+        $expectedCart['languageId'] = self::FIXTURE_LANGUAGE_ID;
+        $this->assertEquals($expectedCart, $cart);
 
-        return $cartId;
+        return $expectedCart;
     }
 
     /**
      * @depends testUpdateCartLanguage
      */
-    public function testUpdateCartDeliverySettings(int $cartId): int
+    public function testUpdateCartDeliverySettings(array $expectedCart): array
     {
+        $cartId = $expectedCart['cartId'];
+
         // The write structure mirrors the read one: the settings live in the shipping sub array
         $cart = $this->updateItem('/carts/' . $cartId . '/delivery-settings', [
             'shipping' => [
@@ -393,7 +455,7 @@ class CartEndpointTest extends ApiTestCase
             ],
         ], ['cart_write']);
 
-        $this->assertEquals($cartId, $cart['cartId']);
+        $this->assertEquals($expectedCart, $cart);
 
         // The response cannot confirm the write on its own: the core only fills the shipping block when the
         // cart has a delivery option, and returns null otherwise, as it does for this fixture cart. The
@@ -413,7 +475,7 @@ class CartEndpointTest extends ApiTestCase
             ],
         ], ['cart_write']);
 
-        $this->assertEquals($cartId, $cart['cartId']);
+        $this->assertEquals($expectedCart, $cart);
         $storedSettings = \Db::getInstance()->getRow(
             'SELECT `gift`, `gift_message`, `recyclable` FROM `' . _DB_PREFIX_ . 'cart` WHERE `id_cart` = ' . (int) $cartId
         );
@@ -432,27 +494,37 @@ class CartEndpointTest extends ApiTestCase
             ],
         ], ['cart_write']);
 
-        $this->assertEquals($cartId, $cart['cartId']);
-        $freeShippingRules = (int) \Db::getInstance()->getValue(
-            'SELECT COUNT(*) FROM `' . _DB_PREFIX_ . 'cart_cart_rule` ccr
+        $freeShippingRuleId = (int) \Db::getInstance()->getValue(
+            'SELECT cr.`id_cart_rule` FROM `' . _DB_PREFIX_ . 'cart_cart_rule` ccr
              INNER JOIN `' . _DB_PREFIX_ . 'cart_rule` cr ON cr.`id_cart_rule` = ccr.`id_cart_rule`
              WHERE ccr.`id_cart` = ' . (int) $cartId . ' AND cr.`free_shipping` = 1'
         );
-        $this->assertSame(1, $freeShippingRules);
+        $this->assertGreaterThan(0, $freeShippingRuleId);
 
-        return $cartId;
+        // The applied rules are keyed by cart rule ID
+        $expectedCart['cartRules'] = [
+            $freeShippingRuleId => [
+                'cartRuleId' => $freeShippingRuleId,
+                'name' => 'Free Shipping',
+                'description' => '',
+                'value' => '0',
+            ],
+        ];
+        $this->assertEquals($expectedCart, $cart);
+
+        return $expectedCart;
     }
 
     /**
      * @depends testUpdateCartDeliverySettings
      */
-    public function testDeleteCart(int $cartId): void
+    public function testDeleteCart(array $expectedCart): void
     {
-        $result = $this->deleteItem('/carts/' . $cartId, ['cart_write']);
+        $result = $this->deleteItem('/carts/' . $expectedCart['cartId'], ['cart_write']);
         $this->assertNull($result);
 
         // Verify cart is gone
-        $this->getItem('/carts/' . $cartId, ['cart_read'], Response::HTTP_NOT_FOUND);
+        $this->getItem('/carts/' . $expectedCart['cartId'], ['cart_read'], Response::HTTP_NOT_FOUND);
     }
 
     public function testGetUnknownCartReturnsNotFound(): void
@@ -996,6 +1068,23 @@ class CartEndpointTest extends ApiTestCase
                 'message' => 'This value should be positive.',
             ],
         ], $validationErrors);
+    }
+
+    /**
+     * Builds the response the CartProduct endpoints are expected to answer, which is limited to the product
+     * list. The quantity, price and removal endpoints also echo the product ID of their URI.
+     */
+    private function getExpectedCartProducts(array $expectedCart, ?int $productId = null): array
+    {
+        $expectedResponse = [
+            'cartId' => $expectedCart['cartId'],
+            'products' => $expectedCart['products'],
+        ];
+        if (null !== $productId) {
+            $expectedResponse['productId'] = $productId;
+        }
+
+        return $expectedResponse;
     }
 
     private function createCartWithProduct(): int
