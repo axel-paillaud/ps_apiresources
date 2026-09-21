@@ -158,7 +158,7 @@ use Symfony\Component\Validator\Constraints as Assert;
             ],
         ),
         new CQRSUpdate(
-            uriTemplate: '/carts/{cartId}/emails',
+            uriTemplate: '/carts/{cartId}/send-cart-by-email',
             requirements: ['cartId' => '\d+'],
             allowEmptyBody: true,
             CQRSCommand: SendCartToCustomerCommand::class,
@@ -184,7 +184,7 @@ use Symfony\Component\Validator\Constraints as Assert;
 class Cart
 {
     // The cart read payload exposes customerId, which CartForOrderCreation only carries since 9.2.0.
-    // The whole Cart domain is gated on that version, except PUT /carts/{cartId}/emails which shipped earlier.
+    // The whole Cart domain is gated on that version, except PUT /carts/{cartId}/send-cart-by-email which shipped earlier.
     public const VERSION_GATE = ['minVersion' => '9.2.0'];
 
     #[ApiProperty(identifier: true)]
