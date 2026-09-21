@@ -58,6 +58,11 @@ class CartEndpointTest extends ApiTestCase
     {
         parent::tearDownAfterClass();
         self::resetTables();
+        // CartRule::add() flips PS_CART_RULE_FEATURE_ACTIVE, so the configuration is restored for the next
+        // test class. Only here: doing it in setUpBeforeClass would roll back the configuration
+        // ApiTestCase::setUpBeforeClass() has just written for this class, PS_ADMIN_API_FORCE_DEBUG_SECURED
+        // included, and every request of the class would then fail to authenticate.
+        DatabaseDump::restoreTables(['configuration']);
     }
 
     protected static function resetTables(): void
@@ -69,8 +74,6 @@ class CartEndpointTest extends ApiTestCase
             'cart_rule',
             'cart_rule_lang',
             'cart_rule_shop',
-            // CartRule::add() flips PS_CART_RULE_FEATURE_ACTIVE, which the cart rule fixtures below trigger
-            'configuration',
             'customization',
             'customized_data',
         ]);
