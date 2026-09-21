@@ -59,17 +59,13 @@ class CartEmailEndpointTest extends ApiTestCase
     {
         $cartId = $this->createCustomerCart();
 
-        $cart = $this->requestApi(
+        $this->requestApi(
             'PUT',
             '/carts/' . $cartId . '/send-cart-by-email',
             null,
             ['cart_write'],
-            Response::HTTP_OK
+            Response::HTTP_NO_CONTENT
         );
-
-        // Like every other Cart write, the endpoint answers with the cart itself
-        $this->assertEquals($cartId, $cart['cartId']);
-        $this->assertNotEmpty($cart['products']);
     }
 
     // Note: the CartException => 422 mapping is not exercised here. The only way the handler

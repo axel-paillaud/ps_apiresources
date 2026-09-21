@@ -159,10 +159,11 @@ use Symfony\Component\Validator\Constraints as Assert;
         new CQRSUpdate(
             uriTemplate: '/carts/{cartId}/send-cart-by-email',
             requirements: ['cartId' => '\d+'],
+            // Sending the email leaves the cart untouched, so the operation answers 204 with no body.
+            read: false,
+            output: false,
             allowEmptyBody: true,
             CQRSCommand: SendCartToCustomerCommand::class,
-            CQRSQuery: GetCartForOrderCreation::class,
-            CQRSQueryMapping: self::QUERY_MAPPING,
             scopes: ['cart_write'],
         ),
     ],
