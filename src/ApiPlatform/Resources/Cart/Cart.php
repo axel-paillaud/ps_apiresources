@@ -38,6 +38,10 @@ use PrestaShop\PrestaShop\Core\Domain\Cart\Exception\CartException;
 use PrestaShop\PrestaShop\Core\Domain\Cart\Exception\CartNotFoundException;
 use PrestaShop\PrestaShop\Core\Domain\Cart\Query\GetCartForOrderCreation;
 use PrestaShop\PrestaShop\Core\Domain\CartRule\Exception\CartRuleValidityException;
+use PrestaShop\PrestaShop\Core\Domain\Currency\Exception\CurrencyException;
+use PrestaShop\PrestaShop\Core\Domain\Currency\Exception\CurrencyNotFoundException;
+use PrestaShop\PrestaShop\Core\Domain\Language\Exception\LanguageException;
+use PrestaShop\PrestaShop\Core\Domain\Language\Exception\LanguageNotFoundException;
 use PrestaShopBundle\ApiPlatform\Metadata\CQRSCreate;
 use PrestaShopBundle\ApiPlatform\Metadata\CQRSDelete;
 use PrestaShopBundle\ApiPlatform\Metadata\CQRSGet;
@@ -50,6 +54,7 @@ use Symfony\Component\Validator\Constraints as Assert;
     operations: [
         new CQRSGet(
             uriTemplate: '/carts/{cartId}',
+            extraProperties: self::VERSION_GATE,
             requirements: ['cartId' => '\d+'],
             CQRSQuery: GetCartForOrderCreation::class,
             CQRSQueryMapping: self::QUERY_MAPPING,
@@ -57,6 +62,10 @@ use Symfony\Component\Validator\Constraints as Assert;
         ),
         new CQRSCreate(
             uriTemplate: '/carts',
+            extraProperties: self::VERSION_GATE,
+            // The core reuses the last empty cart of the customer when there is one, so two consecutive
+            // calls can answer 201 with the same cartId.
+            description: 'Creates an empty cart for a customer, or returns their existing empty cart when they already have one.',
             validationContext: ['groups' => ['Default', 'Create']],
             CQRSCommand: CreateEmptyCustomerCartCommand::class,
             CQRSQuery: GetCartForOrderCreation::class,
@@ -65,12 +74,14 @@ use Symfony\Component\Validator\Constraints as Assert;
         ),
         new CQRSDelete(
             uriTemplate: '/carts/{cartId}',
+            extraProperties: self::VERSION_GATE,
             requirements: ['cartId' => '\d+'],
             CQRSCommand: DeleteCartCommand::class,
             scopes: ['cart_write'],
         ),
         new CQRSPartialUpdate(
             uriTemplate: '/carts/{cartId}/addresses',
+            extraProperties: self::VERSION_GATE,
             requirements: ['cartId' => '\d+'],
             validationContext: ['groups' => ['Default', 'UpdateAddresses']],
             CQRSCommand: UpdateCartAddressesCommand::class,
@@ -81,6 +92,7 @@ use Symfony\Component\Validator\Constraints as Assert;
         ),
         new CQRSPartialUpdate(
             uriTemplate: '/carts/{cartId}/carrier',
+            extraProperties: self::VERSION_GATE,
             requirements: ['cartId' => '\d+'],
             validationContext: ['groups' => ['Default', 'UpdateCarrier']],
             CQRSCommand: UpdateCartCarrierCommand::class,
@@ -91,6 +103,7 @@ use Symfony\Component\Validator\Constraints as Assert;
         ),
         new CQRSPartialUpdate(
             uriTemplate: '/carts/{cartId}/currency',
+            extraProperties: self::VERSION_GATE,
             requirements: ['cartId' => '\d+'],
             validationContext: ['groups' => ['Default', 'UpdateCurrency']],
             CQRSCommand: UpdateCartCurrencyCommand::class,
@@ -101,6 +114,7 @@ use Symfony\Component\Validator\Constraints as Assert;
         ),
         new CQRSPartialUpdate(
             uriTemplate: '/carts/{cartId}/language',
+            extraProperties: self::VERSION_GATE,
             requirements: ['cartId' => '\d+'],
             validationContext: ['groups' => ['Default', 'UpdateLanguage']],
             CQRSCommand: UpdateCartLanguageCommand::class,
@@ -111,6 +125,7 @@ use Symfony\Component\Validator\Constraints as Assert;
         ),
         new CQRSPartialUpdate(
             uriTemplate: '/carts/{cartId}/delivery-settings',
+            extraProperties: self::VERSION_GATE,
             requirements: ['cartId' => '\d+'],
             validationContext: ['groups' => ['Default', 'UpdateDeliverySettings']],
             CQRSCommand: UpdateCartDeliverySettingsCommand::class,
@@ -121,6 +136,7 @@ use Symfony\Component\Validator\Constraints as Assert;
         ),
         new CQRSCreate(
             uriTemplate: '/carts/{cartId}/cart-rules',
+            extraProperties: self::VERSION_GATE,
             requirements: ['cartId' => '\d+'],
             validationContext: ['groups' => ['Default', 'AddCartRule']],
             CQRSCommand: AddCartRuleToCartCommand::class,
@@ -136,7 +152,7 @@ use Symfony\Component\Validator\Constraints as Assert;
             CQRSCommand: RemoveCartRuleFromCartCommand::class,
             scopes: ['cart_write'],
             output: Cart::class,
-            extraProperties: [
+            extraProperties: self::VERSION_GATE + [
                 'CQRSQuery' => GetCartForOrderCreation::class,
                 'CQRSQueryMapping' => self::QUERY_MAPPING,
             ],
@@ -152,15 +168,25 @@ use Symfony\Component\Validator\Constraints as Assert;
         ),
     ],
     normalizationContext: ['skip_null_values' => false],
-    // Order matters, the first match wins: CartNotFoundException extends CartException.
+    // Order matters, the first match wins: CartNotFoundException extends CartException. The currency and
+    // language handlers validate the id they are given and raise their own domain exceptions, which extend
+    // DomainException, not CartException, so they need their own entries.
     exceptionToStatus: [
         CartNotFoundException::class => Response::HTTP_NOT_FOUND,
+        CurrencyNotFoundException::class => Response::HTTP_NOT_FOUND,
+        LanguageNotFoundException::class => Response::HTTP_NOT_FOUND,
         CartException::class => Response::HTTP_UNPROCESSABLE_ENTITY,
         CartRuleValidityException::class => Response::HTTP_UNPROCESSABLE_ENTITY,
+        CurrencyException::class => Response::HTTP_UNPROCESSABLE_ENTITY,
+        LanguageException::class => Response::HTTP_UNPROCESSABLE_ENTITY,
     ],
 )]
 class Cart
 {
+    // The cart read payload exposes customerId, which CartForOrderCreation only carries since 9.2.0.
+    // The whole Cart domain is gated on that version, except PUT /carts/{cartId}/emails which shipped earlier.
+    public const VERSION_GATE = ['minVersion' => '9.2.0'];
+
     #[ApiProperty(identifier: true)]
     public int $cartId;
 
@@ -245,7 +271,23 @@ class Cart
     // mapped onto the command, the other ones can be sent back untouched and are ignored.
     #[Assert\NotNull(groups: ['UpdateDeliverySettings'])]
     #[Assert\Collection(
-        fields: ['freeShipping' => new Assert\Required(groups: ['UpdateDeliverySettings'])],
+        // The types have to be asserted here: these four keys live in an untyped array, so without a
+        // constraint a wrong type only fails when the command is denormalized, which answers 400 instead of
+        // the 422 a constraint violation must produce. Assert\Type passes on null, so giftMessage stays nullable.
+        fields: [
+            'freeShipping' => new Assert\Required([
+                new Assert\Type(type: 'bool', groups: ['UpdateDeliverySettings']),
+            ], groups: ['UpdateDeliverySettings']),
+            'gift' => new Assert\Optional([
+                new Assert\Type(type: 'bool', groups: ['UpdateDeliverySettings']),
+            ], groups: ['UpdateDeliverySettings']),
+            'recycledPackaging' => new Assert\Optional([
+                new Assert\Type(type: 'bool', groups: ['UpdateDeliverySettings']),
+            ], groups: ['UpdateDeliverySettings']),
+            'giftMessage' => new Assert\Optional([
+                new Assert\Type(type: 'string', groups: ['UpdateDeliverySettings']),
+            ], groups: ['UpdateDeliverySettings']),
+        ],
         groups: ['UpdateDeliverySettings'],
         allowExtraFields: true,
     )]

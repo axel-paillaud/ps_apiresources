@@ -32,7 +32,9 @@ use PrestaShop\PrestaShop\Core\Domain\Cart\Command\UpdateProductQuantityInCartCo
 use PrestaShop\PrestaShop\Core\Domain\Cart\Exception\CartException;
 use PrestaShop\PrestaShop\Core\Domain\Cart\Exception\CartNotFoundException;
 use PrestaShop\PrestaShop\Core\Domain\Cart\Query\GetCartForOrderCreation;
-use PrestaShop\PrestaShop\Core\Domain\Product\Customization\Exception\CustomizationException;
+use PrestaShop\PrestaShop\Core\Domain\Product\Exception\ProductCustomizationNotFoundException;
+use PrestaShop\PrestaShop\Core\Domain\Product\Exception\ProductException;
+use PrestaShop\PrestaShop\Core\Domain\Product\Exception\ProductNotFoundException;
 use PrestaShopBundle\ApiPlatform\Metadata\CQRSCreate;
 use PrestaShopBundle\ApiPlatform\Metadata\CQRSDelete;
 use PrestaShopBundle\ApiPlatform\Metadata\CQRSPartialUpdate;
@@ -45,6 +47,7 @@ use Symfony\Component\Validator\Constraints as Assert;
     operations: [
         new CQRSCreate(
             uriTemplate: '/carts/{cartId}/products',
+            extraProperties: self::VERSION_GATE,
             requirements: ['cartId' => '\d+'],
             validationContext: ['groups' => ['Default', 'AddProduct']],
             CQRSCommand: AddProductToCartCommand::class,
@@ -54,16 +57,25 @@ use Symfony\Component\Validator\Constraints as Assert;
         new CQRSDelete(
             uriTemplate: '/carts/{cartId}/products/{productId}',
             requirements: ['cartId' => '\d+', 'productId' => '\d+'],
+            // A cart line is identified by product + combination + customization, so combinationId and
+            // customizationId can be sent in the body to target one line. Without them the operation targets
+            // the line that has neither, and the core reports a success even when no line matched.
+            description: 'Removes a product from the cart. Send combinationId and/or customizationId in the body to target a specific cart line, otherwise the line without combination nor customization is removed.',
             // CQRSDelete answers 204 and exposes no CQRSQuery parameter, hence the overrides.
             status: Response::HTTP_OK,
             CQRSCommand: RemoveProductFromCartCommand::class,
             scopes: ['cart_write'],
             output: CartProduct::class,
-            extraProperties: ['CQRSQuery' => GetCartForOrderCreation::class],
+            extraProperties: self::VERSION_GATE + ['CQRSQuery' => GetCartForOrderCreation::class],
         ),
         new CQRSPartialUpdate(
             uriTemplate: '/carts/{cartId}/products/{productId}/quantity',
+            extraProperties: self::VERSION_GATE,
             requirements: ['cartId' => '\d+', 'productId' => '\d+'],
+            // Like the removal, the line is identified by product + combination + customization. The core
+            // does not check that the customization belongs to the product: an unknown customizationId
+            // creates a new cart line instead of updating one.
+            description: 'Updates the quantity of a product in the cart. Send combinationId and/or customizationId in the body to target a specific cart line.',
             validationContext: ['groups' => ['Default', 'UpdateQuantity']],
             CQRSCommand: UpdateProductQuantityInCartCommand::class,
             CQRSQuery: GetCartForOrderCreation::class,
@@ -71,6 +83,7 @@ use Symfony\Component\Validator\Constraints as Assert;
         ),
         new CQRSPartialUpdate(
             uriTemplate: '/carts/{cartId}/products/{productId}/price',
+            extraProperties: self::VERSION_GATE,
             requirements: ['cartId' => '\d+', 'productId' => '\d+'],
             validationContext: ['groups' => ['Default', 'UpdatePrice']],
             CQRSCommand: UpdateProductPriceInCartCommand::class,
@@ -78,15 +91,22 @@ use Symfony\Component\Validator\Constraints as Assert;
             scopes: ['cart_write'],
         ),
     ],
-    // Order matters, the first match wins: CartNotFoundException extends CartException.
+    // Order matters, the first match wins: CartNotFoundException extends CartException, and every
+    // product exception below extends ProductException, CustomizationException included. The handlers
+    // reach the product domain (unknown product, stock, customization, zero id built into a ProductId),
+    // so those exceptions must be mapped here too.
     exceptionToStatus: [
         CartNotFoundException::class => Response::HTTP_NOT_FOUND,
+        ProductNotFoundException::class => Response::HTTP_NOT_FOUND,
+        ProductCustomizationNotFoundException::class => Response::HTTP_NOT_FOUND,
         CartException::class => Response::HTTP_UNPROCESSABLE_ENTITY,
-        CustomizationException::class => Response::HTTP_UNPROCESSABLE_ENTITY,
+        ProductException::class => Response::HTTP_UNPROCESSABLE_ENTITY,
     ],
 )]
 class CartProduct
 {
+    public const VERSION_GATE = ['minVersion' => '9.2.0'];
+
     #[ApiProperty(identifier: true)]
     public int $cartId;
 
@@ -140,14 +160,15 @@ class CartProduct
     public DecimalNumber $price;
 
     // Optional, except on price where UpdateProductPriceInCartCommand takes it without a default value: send 0
-    // for a product without combination.
+    // for a product without combination. On the removal it selects which cart line to remove.
     #[Assert\NotNull(groups: ['UpdatePrice'])]
     #[Assert\PositiveOrZero(groups: ['UpdatePrice'])]
     #[Assert\Positive(groups: ['AddProduct', 'UpdateQuantity'])]
     #[ApiProperty(readable: false, openapiContext: ['type' => 'integer', 'example' => null, 'nullable' => true])]
     public ?int $combinationId;
 
-    // Optional, to target a single customized line of the product rather than all of them
+    // Optional, to target a single customized line of the product rather than all of them, on the quantity
+    // update and on the removal.
     #[Assert\Positive(groups: ['UpdateQuantity'])]
     #[ApiProperty(readable: false, openapiContext: ['type' => 'integer', 'example' => null, 'nullable' => true])]
     public ?int $customizationId;

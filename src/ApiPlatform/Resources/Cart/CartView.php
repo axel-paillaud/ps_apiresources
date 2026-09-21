@@ -24,6 +24,7 @@ namespace PrestaShop\Module\APIResources\ApiPlatform\Resources\Cart;
 
 use ApiPlatform\Metadata\ApiProperty;
 use ApiPlatform\Metadata\ApiResource;
+use PrestaShop\PrestaShop\Core\Domain\Cart\Exception\CartException;
 use PrestaShop\PrestaShop\Core\Domain\Cart\Exception\CartNotFoundException;
 use PrestaShop\PrestaShop\Core\Domain\Cart\Query\GetCartForViewing;
 use PrestaShopBundle\ApiPlatform\Metadata\CQRSGet;
@@ -39,6 +40,7 @@ use Symfony\Component\HttpFoundation\Response;
     operations: [
         new CQRSGet(
             uriTemplate: '/carts/{cartId}/view',
+            extraProperties: self::VERSION_GATE,
             requirements: ['cartId' => '\d+'],
             CQRSQuery: GetCartForViewing::class,
             scopes: ['cart_read'],
@@ -46,12 +48,16 @@ use Symfony\Component\HttpFoundation\Response;
         ),
     ],
     normalizationContext: ['skip_null_values' => false],
+    // Order matters, the first match wins: CartNotFoundException extends CartException.
     exceptionToStatus: [
         CartNotFoundException::class => Response::HTTP_NOT_FOUND,
+        CartException::class => Response::HTTP_UNPROCESSABLE_ENTITY,
     ],
 )]
 class CartView
 {
+    public const VERSION_GATE = ['minVersion' => '9.2.0'];
+
     #[ApiProperty(identifier: true)]
     public int $cartId;
 

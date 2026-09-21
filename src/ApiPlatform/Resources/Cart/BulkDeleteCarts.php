@@ -27,6 +27,8 @@ use ApiPlatform\Metadata\ApiResource;
 use PrestaShop\PrestaShop\Core\Domain\Cart\Command\BulkDeleteCartCommand;
 use PrestaShop\PrestaShop\Core\Domain\Cart\Exception\BulkCartException;
 use PrestaShop\PrestaShop\Core\Domain\Cart\Exception\CartConstraintException;
+use PrestaShop\PrestaShop\Core\Domain\Cart\Exception\CartException;
+use PrestaShop\PrestaShop\Core\Domain\Cart\Exception\CartNotFoundException;
 use PrestaShopBundle\ApiPlatform\Metadata\CQRSDelete;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Validator\Constraints as Assert;
@@ -35,20 +37,34 @@ use Symfony\Component\Validator\Constraints as Assert;
     operations: [
         new CQRSDelete(
             uriTemplate: '/carts/bulk-delete',
+            extraProperties: self::VERSION_GATE,
             // ApiPlatform skips validation on DELETE unless it is explicitly enabled.
             validate: true,
             CQRSCommand: BulkDeleteCartCommand::class,
             scopes: ['cart_write'],
         ),
     ],
+    // BulkCommandExceptionNormalizer resolves the status of every sub error of the 207 body against this
+    // map and falls back to 500, so the per cart exceptions must be listed here, not only the bulk one.
+    // Order matters, the first match wins: the two entries above extend CartException.
     exceptionToStatus: [
+        CartNotFoundException::class => Response::HTTP_NOT_FOUND,
         CartConstraintException::class => Response::HTTP_UNPROCESSABLE_ENTITY,
         BulkCartException::class => Response::HTTP_UNPROCESSABLE_ENTITY,
+        CartException::class => Response::HTTP_UNPROCESSABLE_ENTITY,
     ],
 )]
 class BulkDeleteCarts
 {
+    public const VERSION_GATE = ['minVersion' => '9.2.0'];
+
     #[Assert\NotBlank]
+    // Without this the invalid ids are only caught by the CartId value object, which answers a bare
+    // constraint exception instead of the validation error body the rest of the API returns.
+    #[Assert\All([
+        new Assert\Type('integer'),
+        new Assert\Positive(),
+    ])]
     #[ApiProperty(openapiContext: ['type' => 'array', 'items' => ['type' => 'integer'], 'example' => [1, 2]])]
     public array $cartIds;
 }

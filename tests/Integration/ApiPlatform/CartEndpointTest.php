@@ -22,6 +22,7 @@ declare(strict_types=1);
 
 namespace PsApiResourcesTest\Integration\ApiPlatform;
 
+use PrestaShop\PrestaShop\Core\Domain\Cart\Exception\CartNotFoundException;
 use Symfony\Component\HttpFoundation\Response;
 use Tests\Resources\DatabaseDump;
 
@@ -37,9 +38,17 @@ class CartEndpointTest extends ApiTestCase
     private const FIXTURE_CURRENCY_ID = 1;
     // Default language ID in the test DB
     private const FIXTURE_LANGUAGE_ID = 1;
+    // Name given to the cart rule fixtures created by this class
+    private const CART_RULE_NAME = 'API test cart rule';
 
     public static function setUpBeforeClass(): void
     {
+        if (self::isVersionUnder('9.2.0')) {
+            static::markTestSkipped('The cart endpoints require PrestaShop >= 9.2.0, see Cart::VERSION_GATE');
+
+            return;
+        }
+
         parent::setUpBeforeClass();
         self::resetTables();
         self::createApiClient(['cart_read', 'cart_write']);
@@ -57,6 +66,11 @@ class CartEndpointTest extends ApiTestCase
             'cart',
             'cart_product',
             'cart_cart_rule',
+            'cart_rule',
+            'cart_rule_lang',
+            'cart_rule_shop',
+            // CartRule::add() flips PS_CART_RULE_FEATURE_ACTIVE, which the cart rule fixtures below trigger
+            'configuration',
             'customization',
             'customized_data',
         ]);
@@ -305,6 +319,8 @@ class CartEndpointTest extends ApiTestCase
      */
     public function testUpdateCartCurrency(int $cartId): int
     {
+        // The fixture shop only installs one currency, so this can only assert the endpoint accepts the
+        // cart current one. See testUpdateCartLanguage for a real change of value.
         $cart = $this->partialUpdateItem('/carts/' . $cartId . '/currency', [
             'currencyId' => self::FIXTURE_CURRENCY_ID,
         ], ['cart_write']);
@@ -320,11 +336,22 @@ class CartEndpointTest extends ApiTestCase
      */
     public function testUpdateCartLanguage(int $cartId): int
     {
+        // Switching to the second language installed by ApiTestCase rather than to the one the cart already
+        // has, otherwise the assertion would pass even if the command did nothing
+        $secondLanguageId = (int) \Language::getIdByIso('fr');
+        $this->assertNotSame(self::FIXTURE_LANGUAGE_ID, $secondLanguageId);
+
+        $cart = $this->partialUpdateItem('/carts/' . $cartId . '/language', [
+            'languageId' => $secondLanguageId,
+        ], ['cart_write']);
+
+        $this->assertEquals($cartId, $cart['cartId']);
+        $this->assertEquals($secondLanguageId, $cart['languageId']);
+
         $cart = $this->partialUpdateItem('/carts/' . $cartId . '/language', [
             'languageId' => self::FIXTURE_LANGUAGE_ID,
         ], ['cart_write']);
 
-        $this->assertEquals($cartId, $cart['cartId']);
         $this->assertEquals(self::FIXTURE_LANGUAGE_ID, $cart['languageId']);
 
         return $cartId;
@@ -346,11 +373,51 @@ class CartEndpointTest extends ApiTestCase
         ], ['cart_write']);
 
         $this->assertEquals($cartId, $cart['cartId']);
-        $this->assertArrayHasKey('shipping', $cart);
-        if ($cart['shipping'] !== null) {
-            $this->assertFalse($cart['shipping']['gift']);
-            $this->assertFalse($cart['shipping']['recycledPackaging']);
-        }
+
+        // The response cannot confirm the write on its own: the core only fills the shipping block when the
+        // cart has a delivery option, and returns null otherwise, as it does for this fixture cart. The
+        // stored values are asserted directly instead, so the test still fails if the command stops working.
+        $storedSettings = \Db::getInstance()->getRow(
+            'SELECT `gift`, `recyclable` FROM `' . _DB_PREFIX_ . 'cart` WHERE `id_cart` = ' . (int) $cartId
+        );
+        $this->assertSame(0, (int) $storedSettings['gift']);
+        $this->assertSame(0, (int) $storedSettings['recyclable']);
+
+        $cart = $this->partialUpdateItem('/carts/' . $cartId . '/delivery-settings', [
+            'shipping' => [
+                'freeShipping' => false,
+                'gift' => true,
+                'recycledPackaging' => true,
+                'giftMessage' => 'Happy birthday',
+            ],
+        ], ['cart_write']);
+
+        $this->assertEquals($cartId, $cart['cartId']);
+        $storedSettings = \Db::getInstance()->getRow(
+            'SELECT `gift`, `gift_message`, `recyclable` FROM `' . _DB_PREFIX_ . 'cart` WHERE `id_cart` = ' . (int) $cartId
+        );
+        $this->assertSame(1, (int) $storedSettings['gift']);
+        $this->assertSame(1, (int) $storedSettings['recyclable']);
+        $this->assertSame('Happy birthday', $storedSettings['gift_message']);
+
+        // allowFreeShipping is the only required parameter of the command, and the only one that makes the
+        // core add or remove a free shipping cart rule rather than write a column
+        $cart = $this->partialUpdateItem('/carts/' . $cartId . '/delivery-settings', [
+            'shipping' => [
+                'freeShipping' => true,
+                'gift' => false,
+                'recycledPackaging' => false,
+                'giftMessage' => null,
+            ],
+        ], ['cart_write']);
+
+        $this->assertEquals($cartId, $cart['cartId']);
+        $freeShippingRules = (int) \Db::getInstance()->getValue(
+            'SELECT COUNT(*) FROM `' . _DB_PREFIX_ . 'cart_cart_rule` ccr
+             INNER JOIN `' . _DB_PREFIX_ . 'cart_rule` cr ON cr.`id_cart_rule` = ccr.`id_cart_rule`
+             WHERE ccr.`id_cart` = ' . (int) $cartId . ' AND cr.`free_shipping` = 1'
+        );
+        $this->assertSame(1, $freeShippingRules);
 
         return $cartId;
     }
@@ -482,6 +549,274 @@ class CartEndpointTest extends ApiTestCase
         $this->getItem('/carts/' . $cart2Id, ['cart_read'], Response::HTTP_NOT_FOUND);
     }
 
+    public function testAddAndRemoveCartRule(): void
+    {
+        $cartId = $this->createCartWithProduct();
+        $cartRuleId = self::createCartRule();
+
+        $cart = $this->createItem('/carts/' . $cartId . '/cart-rules', [
+            'cartRuleId' => $cartRuleId,
+        ], ['cart_write']);
+
+        // The applied rules are keyed by cart rule ID
+        $this->assertArrayHasKey($cartRuleId, $cart['cartRules']);
+        $this->assertSame([
+            'cartRuleId' => $cartRuleId,
+            'name' => self::CART_RULE_NAME,
+            'description' => $cart['cartRules'][$cartRuleId]['description'],
+            'value' => $cart['cartRules'][$cartRuleId]['value'],
+        ], $cart['cartRules'][$cartRuleId]);
+
+        // Unlike a plain CQRSDelete, this one answers 200 with the updated cart
+        $cart = $this->deleteItem(
+            '/carts/' . $cartId . '/cart-rules/' . $cartRuleId,
+            ['cart_write'],
+            Response::HTTP_OK
+        );
+
+        $this->assertSame($cartId, $cart['cartId']);
+        $this->assertSame([], $cart['cartRules']);
+
+        $this->deleteItem('/carts/' . $cartId, ['cart_write']);
+    }
+
+    public function testAddInvalidCartRuleToCart(): void
+    {
+        $cartId = $this->createCartWithProduct();
+        // Expired yesterday, so the core rejects it as not applicable
+        $cartRuleId = self::createCartRule(date('Y-m-d H:i:s', strtotime('-2 days')));
+
+        $this->createItem(
+            '/carts/' . $cartId . '/cart-rules',
+            ['cartRuleId' => $cartRuleId],
+            ['cart_write'],
+            Response::HTTP_UNPROCESSABLE_ENTITY
+        );
+
+        $this->deleteItem('/carts/' . $cartId, ['cart_write']);
+    }
+
+    public function testUpdateCartCarrier(): void
+    {
+        $cartId = $this->createCartWithProduct();
+        $carrierId = self::getActiveCarrierId();
+
+        $cart = $this->partialUpdateItem('/carts/' . $cartId . '/carrier', [
+            'carrierId' => $carrierId,
+        ], ['cart_write']);
+
+        $this->assertSame($cartId, $cart['cartId']);
+        // selectedCarrierId is not asserted: it reflects the delivery option the core recomputes for
+        // the cart, which does not have to be the carrier that was just set.
+        $this->assertArrayHasKey('selectedCarrierId', $cart['shipping']);
+
+        $this->deleteItem('/carts/' . $cartId, ['cart_write']);
+    }
+
+    public function testUpdateCartCarrierWithUnknownCarrier(): void
+    {
+        $cartId = $this->createCartWithProduct();
+        $unknownCarrierId = 1 + (int) \Db::getInstance()->getValue(
+            'SELECT MAX(`id_carrier`) FROM `' . _DB_PREFIX_ . 'carrier`'
+        );
+
+        $this->partialUpdateItem(
+            '/carts/' . $cartId . '/carrier',
+            ['carrierId' => $unknownCarrierId],
+            ['cart_write'],
+            Response::HTTP_UNPROCESSABLE_ENTITY
+        );
+
+        $this->deleteItem('/carts/' . $cartId, ['cart_write']);
+    }
+
+    public function testAddUnknownProductToCartReturnsNotFound(): void
+    {
+        $cartId = $this->createCartWithProduct();
+        $unknownProductId = 1 + (int) \Db::getInstance()->getValue(
+            'SELECT MAX(`id_product`) FROM `' . _DB_PREFIX_ . 'product`'
+        );
+
+        $this->createItem('/carts/' . $cartId . '/products', [
+            'productId' => $unknownProductId,
+            'quantity' => 1,
+        ], ['cart_write'], Response::HTTP_NOT_FOUND);
+
+        $this->deleteItem('/carts/' . $cartId, ['cart_write']);
+    }
+
+    public function testAddProductAboveAvailableStockReturnsUnprocessable(): void
+    {
+        $cartId = $this->createCartWithProduct();
+
+        $this->createItem('/carts/' . $cartId . '/products', [
+            'productId' => self::FIXTURE_PRODUCT_ID,
+            'quantity' => 100000,
+        ], ['cart_write'], Response::HTTP_UNPROCESSABLE_ENTITY);
+
+        $this->deleteItem('/carts/' . $cartId, ['cart_write']);
+    }
+
+    // "0" matches the \d+ requirement of the URI, and the DTO constraints never apply to a value read
+    // from the URI, so a zero identifier only gets rejected by the value objects of the core.
+    public function testZeroProductIdInUriReturnsUnprocessable(): void
+    {
+        $cartId = $this->createCartWithProduct();
+
+        $this->partialUpdateItem(
+            '/carts/' . $cartId . '/products/0/quantity',
+            ['quantity' => 1],
+            ['cart_write'],
+            Response::HTTP_UNPROCESSABLE_ENTITY
+        );
+
+        $this->deleteItem('/carts/' . $cartId, ['cart_write']);
+    }
+
+    public function testZeroCartIdOnCartViewReturnsUnprocessable(): void
+    {
+        $this->getItem('/carts/0/view', ['cart_read'], Response::HTTP_UNPROCESSABLE_ENTITY);
+    }
+
+    public function testGetUnknownCartViewReturnsNotFound(): void
+    {
+        $this->getItem('/carts/' . $this->getUnknownCartId() . '/view', ['cart_read'], Response::HTTP_NOT_FOUND);
+    }
+
+    public function testBulkDeleteCartsWithoutIdsReturnsUnprocessable(): void
+    {
+        $this->bulkDeleteItems(
+            '/carts/bulk-delete',
+            ['cartIds' => []],
+            ['cart_write'],
+            Response::HTTP_UNPROCESSABLE_ENTITY
+        );
+    }
+
+    public function testRemoveCombinationLineFromCart(): void
+    {
+        $cartId = $this->createCartWithProduct();
+        [$productId, $combinationId] = self::getProductWithCombination();
+
+        $response = $this->createItem('/carts/' . $cartId . '/products', [
+            'productId' => $productId,
+            'quantity' => 1,
+            'combinationId' => $combinationId,
+        ], ['cart_write']);
+        $combinationLines = array_filter(
+            $response['products'],
+            fn ($product) => $product['attributeId'] === $combinationId
+        );
+        $this->assertCount(1, $combinationLines);
+
+        // Without a combinationId the command targets the line with no combination: nothing matches, yet the
+        // core reports a successful removal, so the endpoint answers 200 and the cart is left untouched.
+        $response = $this->requestApi(
+            'DELETE',
+            '/carts/' . $cartId . '/products/' . $productId,
+            null,
+            ['cart_write'],
+            Response::HTTP_OK
+        );
+        $this->assertNotEmpty(array_filter(
+            $response['products'],
+            fn ($product) => $product['attributeId'] === $combinationId
+        ));
+
+        // The combination has to be named in the body for the line to be removed
+        $response = $this->requestApi(
+            'DELETE',
+            '/carts/' . $cartId . '/products/' . $productId,
+            ['combinationId' => $combinationId],
+            ['cart_write'],
+            Response::HTTP_OK
+        );
+        $this->assertEmpty(array_filter(
+            $response['products'],
+            fn ($product) => $product['attributeId'] === $combinationId
+        ));
+
+        $this->deleteItem('/carts/' . $cartId, ['cart_write']);
+    }
+
+    public function testUpdateCartWithUnknownCurrencyReturnsNotFound(): void
+    {
+        $cartId = $this->createCartWithProduct();
+        $unknownCurrencyId = 1 + (int) \Db::getInstance()->getValue(
+            'SELECT MAX(`id_currency`) FROM `' . _DB_PREFIX_ . 'currency`'
+        );
+
+        $this->partialUpdateItem(
+            '/carts/' . $cartId . '/currency',
+            ['currencyId' => $unknownCurrencyId],
+            ['cart_write'],
+            Response::HTTP_NOT_FOUND
+        );
+
+        $this->deleteItem('/carts/' . $cartId, ['cart_write']);
+    }
+
+    public function testUpdateCartWithUnknownLanguageReturnsNotFound(): void
+    {
+        $cartId = $this->createCartWithProduct();
+        $unknownLanguageId = 1 + (int) \Db::getInstance()->getValue(
+            'SELECT MAX(`id_lang`) FROM `' . _DB_PREFIX_ . 'lang`'
+        );
+
+        $this->partialUpdateItem(
+            '/carts/' . $cartId . '/language',
+            ['languageId' => $unknownLanguageId],
+            ['cart_write'],
+            Response::HTTP_NOT_FOUND
+        );
+
+        $this->deleteItem('/carts/' . $cartId, ['cart_write']);
+    }
+
+    public function testBulkDeleteUnknownCartReportsNotFoundPerItem(): void
+    {
+        $cartId = $this->createCartWithProduct();
+        $unknownCartId = $this->getUnknownCartId();
+
+        // Each sub error carries its own status, resolved against this operation exceptionToStatus map
+        $this->bulkCommandItemsWithExpectedErrors(
+            'DELETE',
+            '/carts/bulk-delete',
+            ['cartIds' => [$cartId, $unknownCartId]],
+            [
+                [
+                    'type' => CartNotFoundException::class,
+                    'message' => sprintf('Cart #%d was not found', $unknownCartId),
+                    'status' => Response::HTTP_NOT_FOUND,
+                ],
+            ],
+            ['cart_write']
+        );
+
+        $this->getItem('/carts/' . $cartId, ['cart_read'], Response::HTTP_NOT_FOUND);
+    }
+
+    public function testBulkDeleteCartsWithInvalidIdsReturnsValidationErrors(): void
+    {
+        $validationErrors = $this->bulkDeleteItems(
+            '/carts/bulk-delete',
+            ['cartIds' => [0, 'abc']],
+            ['cart_write'],
+            Response::HTTP_UNPROCESSABLE_ENTITY
+        );
+
+        $this->assertValidationErrors([
+            [
+                'propertyPath' => 'cartIds[0]',
+                'message' => 'This value should be positive.',
+            ],
+            [
+                'propertyPath' => 'cartIds[1]',
+                'message' => 'This value should be of type integer.',
+            ],
+        ], $validationErrors);
+    }
+
     public function testCreateCartInvalidData(): void
     {
         $validationErrors = $this->createItem('/carts', [
@@ -553,6 +888,50 @@ class CartEndpointTest extends ApiTestCase
         ], $validationErrors);
     }
 
+    public function testUpdateCartDeliverySettingsInvalidData(): void
+    {
+        $cartId = $this->createCartWithProduct();
+
+        // A non boolean freeShipping must be a validation error, not a denormalization one
+        $validationErrors = $this->partialUpdateItem('/carts/' . $cartId . '/delivery-settings', [
+            'shipping' => ['freeShipping' => 'yes'],
+        ], ['cart_write'], Response::HTTP_UNPROCESSABLE_ENTITY);
+
+        $this->assertValidationErrors([
+            [
+                'propertyPath' => 'shipping[freeShipping]',
+                'message' => 'This value should be of type bool.',
+            ],
+        ], $validationErrors);
+
+        // The three optional fields go through the same command, so they need the same treatment
+        $validationErrors = $this->partialUpdateItem('/carts/' . $cartId . '/delivery-settings', [
+            'shipping' => [
+                'freeShipping' => false,
+                'gift' => 'yes',
+                'recycledPackaging' => 'no',
+                'giftMessage' => ['not a string'],
+            ],
+        ], ['cart_write'], Response::HTTP_UNPROCESSABLE_ENTITY);
+
+        $this->assertValidationErrors([
+            [
+                'propertyPath' => 'shipping[gift]',
+                'message' => 'This value should be of type bool.',
+            ],
+            [
+                'propertyPath' => 'shipping[recycledPackaging]',
+                'message' => 'This value should be of type bool.',
+            ],
+            [
+                'propertyPath' => 'shipping[giftMessage]',
+                'message' => 'This value should be of type string.',
+            ],
+        ], $validationErrors);
+
+        $this->deleteItem('/carts/' . $cartId, ['cart_write']);
+    }
+
     public function testUpdateCartCarrierInvalidData(): void
     {
         $validationErrors = $this->partialUpdateItem('/carts/1/carrier', [
@@ -596,6 +975,70 @@ class CartEndpointTest extends ApiTestCase
                 'message' => 'This value should be positive.',
             ],
         ], $validationErrors);
+    }
+
+    private function createCartWithProduct(): int
+    {
+        $cart = $this->createItem('/carts', ['customerId' => self::FIXTURE_CUSTOMER_ID], ['cart_write']);
+        $cartId = $cart['cartId'];
+
+        $this->createItem('/carts/' . $cartId . '/products', [
+            'productId' => self::FIXTURE_PRODUCT_ID,
+            'quantity' => 1,
+        ], ['cart_write']);
+
+        return $cartId;
+    }
+
+    /**
+     * There is no endpoint creating a cart rule that is applicable out of the box, so the fixture is
+     * built with the legacy object, like CartEmailEndpointTest does for its cart.
+     */
+    private static function createCartRule(?string $dateTo = null): int
+    {
+        $cartRule = new \CartRule();
+        $cartRule->id_customer = 0;
+        // Without a code the core auto-applies the rule to every applicable cart, and the endpoint
+        // would then answer "This voucher is already in your cart"
+        $cartRule->code = 'API_TEST_' . uniqid();
+        $cartRule->date_from = date('Y-m-d H:i:s', strtotime('-1 day'));
+        $cartRule->date_to = $dateTo ?? date('Y-m-d H:i:s', strtotime('+1 year'));
+        $cartRule->quantity = 100;
+        $cartRule->quantity_per_user = 100;
+        $cartRule->reduction_percent = 10.0;
+        $cartRule->active = true;
+        foreach (\Language::getLanguages(false) as $language) {
+            $cartRule->name[(int) $language['id_lang']] = self::CART_RULE_NAME;
+        }
+        $cartRule->add();
+
+        return (int) $cartRule->id;
+    }
+
+    /**
+     * @return array{0: int, 1: int} product id and one of its in stock combination ids
+     */
+    private static function getProductWithCombination(): array
+    {
+        $row = \Db::getInstance()->getRow(
+            'SELECT pa.`id_product`, pa.`id_product_attribute`
+             FROM `' . _DB_PREFIX_ . 'product_attribute` pa
+             INNER JOIN `' . _DB_PREFIX_ . 'product` p ON p.`id_product` = pa.`id_product`
+             INNER JOIN `' . _DB_PREFIX_ . 'stock_available` sa
+                ON sa.`id_product` = pa.`id_product` AND sa.`id_product_attribute` = pa.`id_product_attribute`
+             WHERE p.`active` = 1 AND sa.`quantity` > 0
+             ORDER BY pa.`id_product`, pa.`id_product_attribute`'
+        );
+
+        return [(int) $row['id_product'], (int) $row['id_product_attribute']];
+    }
+
+    private static function getActiveCarrierId(): int
+    {
+        return (int) \Db::getInstance()->getValue(
+            'SELECT `id_carrier` FROM `' . _DB_PREFIX_ . 'carrier`
+             WHERE `active` = 1 AND `deleted` = 0 ORDER BY `id_carrier` ASC'
+        );
     }
 
     private function getUnknownCartId(): int
