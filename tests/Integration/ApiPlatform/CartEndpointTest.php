@@ -32,6 +32,8 @@ class CartEndpointTest extends ApiTestCase
     private const FIXTURE_CUSTOMER_ID = 1;
     // Fixture product ID that always exists in the test DB
     private const FIXTURE_PRODUCT_ID = 1;
+    // Second fixture product, a standard one without combination
+    private const FIXTURE_SECOND_PRODUCT_ID = 6;
     // Fixture address ID that always exists in the test DB
     private const FIXTURE_ADDRESS_ID = 1;
     // Default currency ID (Euro) in the test DB
@@ -289,8 +291,24 @@ class CartEndpointTest extends ApiTestCase
      */
     public function testRemoveProductFromCart(int $cartId): int
     {
+        // A second product proves the removal only targets the requested one instead of emptying the cart
+        $response = $this->createItem('/carts/' . $cartId . '/products', [
+            'productId' => self::FIXTURE_SECOND_PRODUCT_ID,
+            'quantity' => 1,
+        ], ['cart_write']);
+        $this->assertCount(2, $response['products']);
+
         $response = $this->deleteItem(
             '/carts/' . $cartId . '/products/' . self::FIXTURE_PRODUCT_ID,
+            ['cart_write'],
+            Response::HTTP_OK
+        );
+
+        $this->assertCount(1, $response['products']);
+        $this->assertEquals(self::FIXTURE_SECOND_PRODUCT_ID, $response['products'][0]['productId']);
+
+        $response = $this->deleteItem(
+            '/carts/' . $cartId . '/products/' . self::FIXTURE_SECOND_PRODUCT_ID,
             ['cart_write'],
             Response::HTTP_OK
         );
