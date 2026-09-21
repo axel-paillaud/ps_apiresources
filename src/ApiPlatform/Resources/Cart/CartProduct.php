@@ -37,7 +37,7 @@ use PrestaShop\PrestaShop\Core\Domain\Product\Exception\ProductException;
 use PrestaShop\PrestaShop\Core\Domain\Product\Exception\ProductNotFoundException;
 use PrestaShopBundle\ApiPlatform\Metadata\CQRSCreate;
 use PrestaShopBundle\ApiPlatform\Metadata\CQRSDelete;
-use PrestaShopBundle\ApiPlatform\Metadata\CQRSPartialUpdate;
+use PrestaShopBundle\ApiPlatform\Metadata\CQRSUpdate;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Validator\Constraints as Assert;
 
@@ -68,7 +68,7 @@ use Symfony\Component\Validator\Constraints as Assert;
             output: CartProduct::class,
             extraProperties: self::VERSION_GATE + ['CQRSQuery' => GetCartForOrderCreation::class],
         ),
-        new CQRSPartialUpdate(
+        new CQRSUpdate(
             uriTemplate: '/carts/{cartId}/products/{productId}/quantity',
             extraProperties: self::VERSION_GATE,
             requirements: ['cartId' => '\d+', 'productId' => '\d+'],
@@ -81,7 +81,7 @@ use Symfony\Component\Validator\Constraints as Assert;
             CQRSQuery: GetCartForOrderCreation::class,
             scopes: ['cart_write'],
         ),
-        new CQRSPartialUpdate(
+        new CQRSUpdate(
             uriTemplate: '/carts/{cartId}/products/{productId}/price',
             extraProperties: self::VERSION_GATE,
             requirements: ['cartId' => '\d+', 'productId' => '\d+'],
@@ -147,7 +147,7 @@ class CartProduct
     ])]
     public array $products;
 
-    // Write-only fields below, body of POST /products and of PATCH /products/{productId}/quantity
+    // Write-only fields below, body of POST /products and of PUT /products/{productId}/quantity
     #[Assert\NotNull(groups: ['AddProduct', 'UpdateQuantity'])]
     #[Assert\Positive(groups: ['AddProduct', 'UpdateQuantity'])]
     #[ApiProperty(readable: false, openapiContext: ['type' => 'integer', 'example' => 2])]

@@ -112,12 +112,12 @@ class CartEndpointTest extends ApiTestCase
         ];
 
         yield 'update product quantity endpoint' => [
-            'PATCH',
+            'PUT',
             '/carts/1/products/1/quantity',
         ];
 
         yield 'update product price endpoint' => [
-            'PATCH',
+            'PUT',
             '/carts/1/products/1/price',
         ];
 
@@ -132,27 +132,27 @@ class CartEndpointTest extends ApiTestCase
         ];
 
         yield 'update cart addresses endpoint' => [
-            'PATCH',
+            'PUT',
             '/carts/1/addresses',
         ];
 
         yield 'update cart carrier endpoint' => [
-            'PATCH',
+            'PUT',
             '/carts/1/carrier',
         ];
 
         yield 'update cart currency endpoint' => [
-            'PATCH',
+            'PUT',
             '/carts/1/currency',
         ];
 
         yield 'update cart delivery settings endpoint' => [
-            'PATCH',
+            'PUT',
             '/carts/1/delivery-settings',
         ];
 
         yield 'update cart language endpoint' => [
-            'PATCH',
+            'PUT',
             '/carts/1/language',
         ];
 
@@ -253,7 +253,7 @@ class CartEndpointTest extends ApiTestCase
      */
     public function testUpdateProductQuantityInCart(int $cartId): int
     {
-        $response = $this->partialUpdateItem(
+        $response = $this->updateItem(
             '/carts/' . $cartId . '/products/' . self::FIXTURE_PRODUCT_ID . '/quantity',
             ['quantity' => 5],
             ['cart_write']
@@ -270,7 +270,7 @@ class CartEndpointTest extends ApiTestCase
      */
     public function testUpdateProductPriceInCart(int $cartId): int
     {
-        $response = $this->partialUpdateItem(
+        $response = $this->updateItem(
             '/carts/' . $cartId . '/products/' . self::FIXTURE_PRODUCT_ID . '/price',
             // combinationId is required here, 0 stands for a product without combination
             ['combinationId' => 0, 'price' => 12.5],
@@ -305,7 +305,7 @@ class CartEndpointTest extends ApiTestCase
      */
     public function testUpdateCartAddresses(int $cartId): int
     {
-        $cart = $this->partialUpdateItem('/carts/' . $cartId . '/addresses', [
+        $cart = $this->updateItem('/carts/' . $cartId . '/addresses', [
             'deliveryAddressId' => self::FIXTURE_ADDRESS_ID,
             'invoiceAddressId' => self::FIXTURE_ADDRESS_ID,
         ], ['cart_write']);
@@ -324,7 +324,7 @@ class CartEndpointTest extends ApiTestCase
     {
         // The fixture shop only installs one currency, so this can only assert the endpoint accepts the
         // cart current one. See testUpdateCartLanguage for a real change of value.
-        $cart = $this->partialUpdateItem('/carts/' . $cartId . '/currency', [
+        $cart = $this->updateItem('/carts/' . $cartId . '/currency', [
             'currencyId' => self::FIXTURE_CURRENCY_ID,
         ], ['cart_write']);
 
@@ -344,14 +344,14 @@ class CartEndpointTest extends ApiTestCase
         $secondLanguageId = (int) \Language::getIdByIso('fr');
         $this->assertNotSame(self::FIXTURE_LANGUAGE_ID, $secondLanguageId);
 
-        $cart = $this->partialUpdateItem('/carts/' . $cartId . '/language', [
+        $cart = $this->updateItem('/carts/' . $cartId . '/language', [
             'languageId' => $secondLanguageId,
         ], ['cart_write']);
 
         $this->assertEquals($cartId, $cart['cartId']);
         $this->assertEquals($secondLanguageId, $cart['languageId']);
 
-        $cart = $this->partialUpdateItem('/carts/' . $cartId . '/language', [
+        $cart = $this->updateItem('/carts/' . $cartId . '/language', [
             'languageId' => self::FIXTURE_LANGUAGE_ID,
         ], ['cart_write']);
 
@@ -366,7 +366,7 @@ class CartEndpointTest extends ApiTestCase
     public function testUpdateCartDeliverySettings(int $cartId): int
     {
         // The write structure mirrors the read one: the settings live in the shipping sub array
-        $cart = $this->partialUpdateItem('/carts/' . $cartId . '/delivery-settings', [
+        $cart = $this->updateItem('/carts/' . $cartId . '/delivery-settings', [
             'shipping' => [
                 'freeShipping' => false,
                 'gift' => false,
@@ -386,7 +386,7 @@ class CartEndpointTest extends ApiTestCase
         $this->assertSame(0, (int) $storedSettings['gift']);
         $this->assertSame(0, (int) $storedSettings['recyclable']);
 
-        $cart = $this->partialUpdateItem('/carts/' . $cartId . '/delivery-settings', [
+        $cart = $this->updateItem('/carts/' . $cartId . '/delivery-settings', [
             'shipping' => [
                 'freeShipping' => false,
                 'gift' => true,
@@ -405,7 +405,7 @@ class CartEndpointTest extends ApiTestCase
 
         // allowFreeShipping is the only required parameter of the command, and the only one that makes the
         // core add or remove a free shipping cart rule rather than write a column
-        $cart = $this->partialUpdateItem('/carts/' . $cartId . '/delivery-settings', [
+        $cart = $this->updateItem('/carts/' . $cartId . '/delivery-settings', [
             'shipping' => [
                 'freeShipping' => true,
                 'gift' => false,
@@ -604,7 +604,7 @@ class CartEndpointTest extends ApiTestCase
         $cartId = $this->createCartWithProduct();
         $carrierId = self::getActiveCarrierId();
 
-        $cart = $this->partialUpdateItem('/carts/' . $cartId . '/carrier', [
+        $cart = $this->updateItem('/carts/' . $cartId . '/carrier', [
             'carrierId' => $carrierId,
         ], ['cart_write']);
 
@@ -623,7 +623,7 @@ class CartEndpointTest extends ApiTestCase
             'SELECT MAX(`id_carrier`) FROM `' . _DB_PREFIX_ . 'carrier`'
         );
 
-        $this->partialUpdateItem(
+        $this->updateItem(
             '/carts/' . $cartId . '/carrier',
             ['carrierId' => $unknownCarrierId],
             ['cart_write'],
@@ -666,7 +666,7 @@ class CartEndpointTest extends ApiTestCase
     {
         $cartId = $this->createCartWithProduct();
 
-        $this->partialUpdateItem(
+        $this->updateItem(
             '/carts/' . $cartId . '/products/0/quantity',
             ['quantity' => 1],
             ['cart_write'],
@@ -749,7 +749,7 @@ class CartEndpointTest extends ApiTestCase
             'SELECT MAX(`id_currency`) FROM `' . _DB_PREFIX_ . 'currency`'
         );
 
-        $this->partialUpdateItem(
+        $this->updateItem(
             '/carts/' . $cartId . '/currency',
             ['currencyId' => $unknownCurrencyId],
             ['cart_write'],
@@ -766,7 +766,7 @@ class CartEndpointTest extends ApiTestCase
             'SELECT MAX(`id_lang`) FROM `' . _DB_PREFIX_ . 'lang`'
         );
 
-        $this->partialUpdateItem(
+        $this->updateItem(
             '/carts/' . $cartId . '/language',
             ['languageId' => $unknownLanguageId],
             ['cart_write'],
@@ -858,7 +858,7 @@ class CartEndpointTest extends ApiTestCase
     public function testUpdateProductQuantityInvalidData(): void
     {
         // productId comes from the URI, only the quantity can be invalid here
-        $validationErrors = $this->partialUpdateItem('/carts/1/products/1/quantity', [
+        $validationErrors = $this->updateItem('/carts/1/products/1/quantity', [
             'quantity' => -1,
         ], ['cart_write'], Response::HTTP_UNPROCESSABLE_ENTITY);
 
@@ -873,7 +873,7 @@ class CartEndpointTest extends ApiTestCase
 
     public function testUpdateCartAddressesInvalidData(): void
     {
-        $validationErrors = $this->partialUpdateItem('/carts/1/addresses', [
+        $validationErrors = $this->updateItem('/carts/1/addresses', [
             'deliveryAddressId' => -1,
             'invoiceAddressId' => -1,
         ], ['cart_write'], Response::HTTP_UNPROCESSABLE_ENTITY);
@@ -896,7 +896,7 @@ class CartEndpointTest extends ApiTestCase
         $cartId = $this->createCartWithProduct();
 
         // A non boolean freeShipping must be a validation error, not a denormalization one
-        $validationErrors = $this->partialUpdateItem('/carts/' . $cartId . '/delivery-settings', [
+        $validationErrors = $this->updateItem('/carts/' . $cartId . '/delivery-settings', [
             'shipping' => ['freeShipping' => 'yes'],
         ], ['cart_write'], Response::HTTP_UNPROCESSABLE_ENTITY);
 
@@ -908,7 +908,7 @@ class CartEndpointTest extends ApiTestCase
         ], $validationErrors);
 
         // The three optional fields go through the same command, so they need the same treatment
-        $validationErrors = $this->partialUpdateItem('/carts/' . $cartId . '/delivery-settings', [
+        $validationErrors = $this->updateItem('/carts/' . $cartId . '/delivery-settings', [
             'shipping' => [
                 'freeShipping' => false,
                 'gift' => 'yes',
@@ -937,7 +937,7 @@ class CartEndpointTest extends ApiTestCase
 
     public function testUpdateCartCarrierInvalidData(): void
     {
-        $validationErrors = $this->partialUpdateItem('/carts/1/carrier', [
+        $validationErrors = $this->updateItem('/carts/1/carrier', [
             'carrierId' => -1,
         ], ['cart_write'], Response::HTTP_UNPROCESSABLE_ENTITY);
 
@@ -952,7 +952,7 @@ class CartEndpointTest extends ApiTestCase
 
     public function testUpdateCartCurrencyInvalidData(): void
     {
-        $validationErrors = $this->partialUpdateItem('/carts/1/currency', [
+        $validationErrors = $this->updateItem('/carts/1/currency', [
             'currencyId' => -1,
         ], ['cart_write'], Response::HTTP_UNPROCESSABLE_ENTITY);
 
@@ -967,7 +967,7 @@ class CartEndpointTest extends ApiTestCase
 
     public function testUpdateCartLanguageInvalidData(): void
     {
-        $validationErrors = $this->partialUpdateItem('/carts/1/language', [
+        $validationErrors = $this->updateItem('/carts/1/language', [
             'languageId' => -1,
         ], ['cart_write'], Response::HTTP_UNPROCESSABLE_ENTITY);
 

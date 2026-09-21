@@ -45,7 +45,6 @@ use PrestaShop\PrestaShop\Core\Domain\Language\Exception\LanguageNotFoundExcepti
 use PrestaShopBundle\ApiPlatform\Metadata\CQRSCreate;
 use PrestaShopBundle\ApiPlatform\Metadata\CQRSDelete;
 use PrestaShopBundle\ApiPlatform\Metadata\CQRSGet;
-use PrestaShopBundle\ApiPlatform\Metadata\CQRSPartialUpdate;
 use PrestaShopBundle\ApiPlatform\Metadata\CQRSUpdate;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Validator\Constraints as Assert;
@@ -79,7 +78,7 @@ use Symfony\Component\Validator\Constraints as Assert;
             CQRSCommand: DeleteCartCommand::class,
             scopes: ['cart_write'],
         ),
-        new CQRSPartialUpdate(
+        new CQRSUpdate(
             uriTemplate: '/carts/{cartId}/addresses',
             extraProperties: self::VERSION_GATE,
             requirements: ['cartId' => '\d+'],
@@ -90,7 +89,7 @@ use Symfony\Component\Validator\Constraints as Assert;
             scopes: ['cart_write'],
             CQRSCommandMapping: self::COMMAND_MAPPING_ADDRESSES,
         ),
-        new CQRSPartialUpdate(
+        new CQRSUpdate(
             uriTemplate: '/carts/{cartId}/carrier',
             extraProperties: self::VERSION_GATE,
             requirements: ['cartId' => '\d+'],
@@ -101,7 +100,7 @@ use Symfony\Component\Validator\Constraints as Assert;
             scopes: ['cart_write'],
             CQRSCommandMapping: self::COMMAND_MAPPING_CARRIER,
         ),
-        new CQRSPartialUpdate(
+        new CQRSUpdate(
             uriTemplate: '/carts/{cartId}/currency',
             extraProperties: self::VERSION_GATE,
             requirements: ['cartId' => '\d+'],
@@ -112,7 +111,7 @@ use Symfony\Component\Validator\Constraints as Assert;
             scopes: ['cart_write'],
             CQRSCommandMapping: self::COMMAND_MAPPING_CURRENCY,
         ),
-        new CQRSPartialUpdate(
+        new CQRSUpdate(
             uriTemplate: '/carts/{cartId}/language',
             extraProperties: self::VERSION_GATE,
             requirements: ['cartId' => '\d+'],
@@ -123,7 +122,7 @@ use Symfony\Component\Validator\Constraints as Assert;
             scopes: ['cart_write'],
             CQRSCommandMapping: self::COMMAND_MAPPING_LANGUAGE,
         ),
-        new CQRSPartialUpdate(
+        new CQRSUpdate(
             uriTemplate: '/carts/{cartId}/delivery-settings',
             extraProperties: self::VERSION_GATE,
             requirements: ['cartId' => '\d+'],
@@ -253,7 +252,7 @@ class Cart
 
     #[ApiProperty(openapiContext: [
         'type' => 'array',
-        'description' => 'Read-only. Addresses are managed through PATCH /carts/{cartId}/addresses.',
+        'description' => 'Read-only. Addresses are managed through PUT /carts/{cartId}/addresses.',
         'items' => [
             'type' => 'object',
             'properties' => [
@@ -267,7 +266,7 @@ class Cart
     ])]
     public array $addresses;
 
-    // Also the body of PATCH /delivery-settings, with the same structure as in read: only the four keys below are
+    // Also the body of PUT /delivery-settings, with the same structure as in read: only the four keys below are
     // mapped onto the command, the other ones can be sent back untouched and are ignored.
     #[Assert\NotNull(groups: ['UpdateDeliverySettings'])]
     #[Assert\Collection(
@@ -334,7 +333,7 @@ class Cart
     ])]
     public array $summary;
 
-    // Write-only fields below, body of PATCH /addresses
+    // Write-only fields below, body of PUT /addresses
     #[Assert\NotBlank(groups: ['UpdateAddresses'])]
     #[Assert\Positive(groups: ['UpdateAddresses'])]
     #[ApiProperty(readable: false, openapiContext: ['type' => 'integer', 'example' => 1])]
@@ -345,7 +344,7 @@ class Cart
     #[ApiProperty(readable: false, openapiContext: ['type' => 'integer', 'example' => 1])]
     public int $invoiceAddressId;
 
-    // Body of PATCH /carrier, the selected carrier is read in shipping.selectedCarrierId
+    // Body of PUT /carrier, the selected carrier is read in shipping.selectedCarrierId
     #[Assert\NotBlank(groups: ['UpdateCarrier'])]
     #[Assert\Positive(groups: ['UpdateCarrier'])]
     #[ApiProperty(readable: false, openapiContext: ['type' => 'integer', 'example' => 2])]
